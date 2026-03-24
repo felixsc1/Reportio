@@ -48,14 +48,30 @@ class BexioClient:
         retry=retry_if_exception_type((httpx.TimeoutException, httpx.NetworkError)),
     )
     def _request(self, method: str, endpoint: str, json_body: Any | None = None) -> list[dict[str, Any]]:
-        logger.debug("Bexio API request: %s %s with body=%s", method, endpoint, json_body)
-        response = self._client.request(method, endpoint, headers=self._headers(), json=json_body)
+        headers = self._headers()
+        logger.info(
+            "Bexio API request: %s %s | Content-Type=%s | body_type=%s | body=%s", 
+            method, 
+            endpoint, 
+            headers.get("Content-Type"), 
+            type(json_body).__name__,
+            json_body if json_body is None or len(str(json_body)) < 100 else "[...]"
+        )
+
+        response = self._client.request(
+            method, 
+            endpoint, 
+            headers=headers, 
+            json=json_body
+        )
+
+        logger.info("Bexio API response: %s %s -> %s", method, endpoint, response.status_code)
 
         if response.status_code in (429, 500, 502, 503, 504):
             raise httpx.NetworkError(f"Transient Bexio API error: {response.status_code}")
 
         if response.status_code >= 400:
-            error_body = response.text[:500]
+            error_body = response.text[:800]
             logger.error("Bexio API error %s %s: %s", response.status_code, endpoint, error_body)
             raise BexioApiError(status_code=response.status_code, message=error_body)
 
@@ -83,19 +99,22 @@ class BexioClient:
         return rows
 
     def _paginated_post(self, endpoint: str, base_payload: dict[str, Any] | list | None = None) -> list[dict[str, Any]]:
-        # For Bexio search endpoints, the payload must be a list of search criteria objects (even if empty).
-        # Passing {} or dict causes 400 "field not set" error.
+        # Bexio search expects a JSON array of filter objects.
+        # Empty list `[]` should return all records. If it fails, we try a minimal filter.
         if isinstance(base_payload, dict) or base_payload is None:
-            payload: list[dict[str, Any]] = []
+            payload: list = []
         else:
-            payload = list(base_payload) if base_payload else []
+            payload = list(base_payload) if base_payload is not None else []
+
+        # Fallback: if empty list fails, try a filter that matches everything
+        if not payload:
+            payload = [{"field": "id", "value": "", "criteria": ">="}]
 
         all_rows: list[dict[str, Any]] = []
         limit = 200
         offset = 0
         while True:
             page_payload = payload.copy() if isinstance(payload, list) else []
-            # Bexio supports limit/offset as query params for search, but for simplicity we use empty criteria list
             page_rows = self._cached_post(endpoint, page_payload)
             all_rows.extend(page_rows)
             if len(page_rows) < limit:
