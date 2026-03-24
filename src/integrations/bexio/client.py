@@ -35,7 +35,11 @@ class BexioClient:
 
     def _headers(self) -> dict[str, str]:
         token = self._ensure_token()
-        return {"Authorization": f"Bearer {token.access_token}", "Accept": "application/json"}
+        return {
+            "Authorization": f"Bearer {token.access_token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        }
 
     @retry(
         reraise=True,
@@ -44,44 +48,63 @@ class BexioClient:
         retry=retry_if_exception_type((httpx.TimeoutException, httpx.NetworkError)),
     )
     def _request(self, method: str, endpoint: str, json_body: Any | None = None) -> list[dict[str, Any]]:
+        logger.debug("Bexio API request: %s %s with body=%s", method, endpoint, json_body)
         response = self._client.request(method, endpoint, headers=self._headers(), json=json_body)
+
         if response.status_code in (429, 500, 502, 503, 504):
             raise httpx.NetworkError(f"Transient Bexio API error: {response.status_code}")
+
         if response.status_code >= 400:
-            raise BexioApiError(status_code=response.status_code, message=response.text[:500])
-        data = response.json()
+            error_body = response.text[:500]
+            logger.error("Bexio API error %s %s: %s", response.status_code, endpoint, error_body)
+            raise BexioApiError(status_code=response.status_code, message=error_body)
+
+        try:
+            data = response.json()
+        except Exception as exc:
+            logger.error("Failed to parse JSON from Bexio response: %s", exc)
+            raise BexioApiError(status_code=response.status_code, message="Invalid JSON response") from exc
+
         if isinstance(data, list):
             return data
         if isinstance(data, dict):
             return [data]
         return []
 
-    def _cached_post(self, endpoint: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    def _cached_post(self, endpoint: str, payload: dict[str, Any] | list[dict[str, Any]]) -> list[dict[str, Any]]:
         cache_key = f"{endpoint}:{json.dumps(payload, sort_keys=True)}"
         cached = self.cache.get(cache_key)
         if cached is not None:
+            logger.debug("Cache hit for %s", cache_key)
             return cached
 
         rows = self._request("POST", endpoint, json_body=payload)
         self.cache.set(cache_key, rows)
         return rows
 
-    def _paginated_post(self, endpoint: str, base_payload: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        payload = dict(base_payload or {})
-        payload.setdefault("limit", 200)
-        payload.setdefault("offset", 0)
+    def _paginated_post(self, endpoint: str, base_payload: dict[str, Any] | list | None = None) -> list[dict[str, Any]]:
+        # For Bexio search endpoints, the payload must be a list of search criteria objects (even if empty).
+        # Passing {} or dict causes 400 "field not set" error.
+        if isinstance(base_payload, dict) or base_payload is None:
+            payload: list[dict[str, Any]] = []
+        else:
+            payload = list(base_payload) if base_payload else []
 
         all_rows: list[dict[str, Any]] = []
+        limit = 200
+        offset = 0
         while True:
-            page_rows = self._cached_post(endpoint, payload)
+            page_payload = payload.copy() if isinstance(payload, list) else []
+            # Bexio supports limit/offset as query params for search, but for simplicity we use empty criteria list
+            page_rows = self._cached_post(endpoint, page_payload)
             all_rows.extend(page_rows)
-            if len(page_rows) < payload["limit"]:
+            if len(page_rows) < limit:
                 break
-            payload["offset"] += payload["limit"]
+            offset += limit
         return all_rows
 
     def list_invoices(self, include_open: bool = True, include_paid: bool = True) -> list[dict[str, Any]]:
-        rows = self._paginated_post("/kb_invoice/search", {})
+        rows = self._paginated_post("/kb_invoice/search")
         if include_open and include_paid:
             return rows
         wanted = set()
@@ -92,18 +115,25 @@ class BexioClient:
         return [row for row in rows if str(row.get("status", "")).lower() in wanted]
 
     def list_orders_or_quotes(self) -> list[dict[str, Any]]:
-        return self._paginated_post("/kb_order/search", {})
+        return self._paginated_post("/kb_order/search")
 
     def list_journal_entries(self) -> list[dict[str, Any]]:
-        return self._paginated_post("/journal/search", {})
+        return self._paginated_post("/journal/search")
 
     def list_accounts(self) -> list[dict[str, Any]]:
-        return self._paginated_post("/account/search", {})
+        return self._paginated_post("/account/search")
 
-    def search(self, endpoint: str, filters: dict[str, Any]) -> list[dict[str, Any]]:
+    def search(self, endpoint: str, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         if not endpoint.startswith("/"):
             endpoint = f"/{endpoint}"
-        return self._paginated_post(endpoint, filters)
+        # Pass empty list for search criteria (Bexio expects array of filter objects)
+        search_payload: list = [] if filters is None else []
+        return self._paginated_post(endpoint, search_payload)
+
+    def clear_cache(self) -> None:
+        """Clear the TTL cache. Useful after fixing auth/search issues."""
+        self.cache.clear()
+        logger.info("BexioClient cache cleared")
 
     def close(self) -> None:
         self._client.close()

@@ -17,6 +17,7 @@ class Settings:
     bexio_client_secret: str
     bexio_redirect_uri: str
     bexio_auth_base_url: str
+    bexio_oauth_scope: str
     bexio_api_base_url: str
     openrouter_api_key: str
     openrouter_model: str
@@ -53,7 +54,11 @@ def get_settings() -> Settings:
         bexio_client_id=_read_value("BEXIO_CLIENT_ID"),
         bexio_client_secret=_read_value("BEXIO_CLIENT_SECRET"),
         bexio_redirect_uri=_read_value("BEXIO_REDIRECT_URI", "http://localhost:8501"),
-        bexio_auth_base_url=_read_value("BEXIO_AUTH_BASE_URL", "https://auth.bexio.com"),
+        bexio_auth_base_url=_read_value("BEXIO_AUTH_BASE_URL", "https://auth.bexio.com/realms/bexio"),
+        bexio_oauth_scope=_read_value(
+            "BEXIO_OAUTH_SCOPE",
+            "kb_invoice_show kb_order_show offline_access",
+        ),
         bexio_api_base_url=_read_value("BEXIO_API_BASE_URL", "https://api.bexio.com/2.0"),
         openrouter_api_key=_read_value("OPENROUTER_API_KEY"),
         openrouter_model=_read_value("OPENROUTER_MODEL", "openai/gpt-4o-mini"),

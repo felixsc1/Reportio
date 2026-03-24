@@ -51,30 +51,127 @@ def _dummy_invoices() -> pd.DataFrame:
     return df
 
 
+def _get_oauth_token_from_session() -> OAuthToken | None:
+    raw = st.session_state.get("oauth_token")
+    if isinstance(raw, OAuthToken):
+        return raw
+    if isinstance(raw, dict):
+        try:
+            return OAuthToken(
+                access_token=str(raw.get("access_token", "")),
+                refresh_token=str(raw.get("refresh_token", "")),
+                expires_at=pd.to_datetime(raw.get("expires_at")).to_pydatetime(),
+                token_type=str(raw.get("token_type", "Bearer")),
+            )
+        except Exception:
+            return None
+    # Be resilient to module reloads where class identity can change.
+    if all(hasattr(raw, name) for name in ("access_token", "refresh_token", "expires_at")):
+        try:
+            return OAuthToken(
+                access_token=str(raw.access_token),
+                refresh_token=str(raw.refresh_token),
+                expires_at=pd.to_datetime(raw.expires_at).to_pydatetime(),
+                token_type=str(getattr(raw, "token_type", "Bearer")),
+            )
+        except Exception:
+            return None
+    return None
+
+
 def _render_oauth_panel(settings: Settings) -> None:
     st.subheader("Bexio Connection")
     state = st.session_state.get("oauth_state") or str(uuid4())
     st.session_state["oauth_state"] = state
 
+    if st.button("Reset Bexio session / Reconnect", key="bexio_reset_session"):
+        st.session_state.pop("oauth_token", None)
+        st.session_state.pop("oauth_state", None)
+        st.query_params.clear()
+        st.info("Bexio session reset. Click connect again to authorize with updated scopes.")
+
     client = BexioClient(settings)
     auth_url = client.oauth.build_authorization_url(state=state)
     st.markdown(f"[Connect with Bexio]({auth_url})")
+    st.caption(f"Requested scope: `{settings.bexio_oauth_scope or '(none - app default)'}`")
+
+    with st.expander("Connection diagnostics", expanded=False):
+        qp_code = st.query_params.get("code")
+        qp_state = st.query_params.get("state")
+        qp_error = st.query_params.get("error")
+        qp_error_desc = st.query_params.get("error_description")
+        token = _get_oauth_token_from_session()
+        st.write(f"Has callback code: {'yes' if qp_code else 'no'}")
+        st.write(f"Has callback state: {'yes' if qp_state else 'no'}")
+        st.write(f"Session token present: {'yes' if token else 'no'}")
+        st.write(f"OAuth error: {qp_error or 'none'}")
+        st.write(f"OAuth error description: {qp_error_desc or 'none'}")
+        st.write(f"Current redirect URI: `{settings.bexio_redirect_uri}`")
+
+    existing_token = _get_oauth_token_from_session()
+    if existing_token is not None:
+        st.success("Bexio connected.")
+        return
 
     code = st.query_params.get("code")
     callback_state = st.query_params.get("state")
-    if code and callback_state == state and "oauth_token" not in st.session_state:
-        token = client.oauth.exchange_code_for_token(str(code))
-        st.session_state["oauth_token"] = token
-        st.success("Bexio connected successfully.")
+    oauth_error = st.query_params.get("error")
+    oauth_error_description = st.query_params.get("error_description")
+    if oauth_error:
+        st.error(
+            "Bexio authorization failed: "
+            f"{oauth_error}"
+            + (f" - {oauth_error_description}" if oauth_error_description else "")
+        )
+        return
+    if code:
+        # In local Streamlit flows the callback can open a slightly different session;
+        # accept code and only warn on state mismatch instead of dropping the login.
+        if callback_state and callback_state != state:
+            st.warning("OAuth state changed between redirects; continuing with callback code.")
+        try:
+            token = client.oauth.exchange_code_for_token(str(code))
+            st.session_state["oauth_token"] = {
+                "access_token": token.access_token,
+                "refresh_token": token.refresh_token,
+                "expires_at": token.expires_at.isoformat(),
+                "token_type": token.token_type,
+            }
+            st.success("Bexio connected successfully.")
+            st.query_params.clear()
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Bexio token exchange failed: {exc}")
 
 
 def _load_real_invoices(settings: Settings) -> pd.DataFrame | None:
-    token = st.session_state.get("oauth_token")
+    token = _get_oauth_token_from_session()
     if not isinstance(token, OAuthToken):
         return None
     client = BexioClient(settings, token=token)
-    invoices = client.list_invoices()
-    st.session_state["oauth_token"] = client.token
+    try:
+        invoices = client.list_invoices()
+    except Exception as exc:
+        st.warning(f"Connected but failed to load invoices from Bexio: {exc}")
+        st.info(
+            "💡 **Troubleshooting tips:**\n"
+            "• Click **'Reset Bexio session / Reconnect'** (this also clears cache)\n"
+            "• Check that your OAuth app has the `kb_invoice_show` scope\n"
+            "• Verify the user account has access to invoices in Bexio\n"
+            "• Check the console for detailed API error logs (now improved)"
+        )
+        # Clear cache on error so next attempt doesn't reuse a failed response
+        try:
+            client.clear_cache()
+        except Exception:
+            pass
+        return None
+    st.session_state["oauth_token"] = {
+        "access_token": client.token.access_token if client.token else "",
+        "refresh_token": client.token.refresh_token if client.token else "",
+        "expires_at": client.token.expires_at.isoformat() if client.token else "",
+        "token_type": client.token.token_type if client.token else "Bearer",
+    }
     if not invoices:
         return pd.DataFrame(columns=["document_nr", "contact_name", "status", "amount", "date"])
     df = pd.DataFrame(invoices)
@@ -95,6 +192,31 @@ def _load_real_invoices(settings: Settings) -> pd.DataFrame | None:
     return df[["document_nr", "contact_name", "status", "amount", "date"]]
 
 
+def _invoices_to_transactions(invoices_df: pd.DataFrame) -> pd.DataFrame:
+    df = invoices_df.copy()
+    status_l = df["status"].astype(str).str.lower()
+
+    # Bexio status values vary by endpoint/version; map common terms.
+    is_paid = status_l.isin({"paid", "bezahlt", "done"})
+    is_open = status_l.isin({"open", "offen", "pending", "partially_paid"})
+
+    tx_type = pd.Series("in", index=df.index)
+    tx_status = pd.Series("paid", index=df.index)
+    tx_status.loc[is_open] = "open_receivable"
+    tx_status.loc[~(is_paid | is_open)] = "unknown"
+
+    tx = pd.DataFrame(
+        {
+            "date": pd.to_datetime(df["date"], errors="coerce").fillna(pd.Timestamp.utcnow()),
+            "type": tx_type,
+            "amount": pd.to_numeric(df["amount"], errors="coerce").fillna(0.0),
+            "status": tx_status,
+        }
+    )
+    tx["signed_amount"] = tx["amount"]
+    return tx
+
+
 def render_dashboard_page(settings: Settings) -> None:
     presets = ["This Month", "QTD", "YTD", "Custom"]
     selected_preset = st.sidebar.selectbox("Date Range", presets, index=0)
@@ -113,8 +235,10 @@ def render_dashboard_page(settings: Settings) -> None:
     using_real_data = invoices_df is not None
     if invoices_df is None:
         invoices_df = _dummy_invoices()
-
-    transactions_df = _dummy_transactions()
+        transactions_df = _dummy_transactions()
+    else:
+        transactions_df = _invoices_to_transactions(invoices_df)
+        st.success("Connected to Bexio. Dashboard uses live invoice data.")
     kpis = compute_kpis(transactions_df)
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)

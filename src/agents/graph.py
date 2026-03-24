@@ -8,7 +8,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
-from langchain.tools import StructuredTool
+from langchain_core.tools import StructuredTool
 
 from src.agents.state import AgentState
 from src.agents.tools import (
