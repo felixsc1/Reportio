@@ -1,0 +1,13 @@
+streamlit
+langgraph
+langchain
+langchain-openai
+httpx
+authlib
+plotly
+pandas
+numpy
+python-dotenv
+pydantic
+tenacity
+pytest
