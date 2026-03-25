@@ -11,6 +11,7 @@ import streamlit as st
 from src.config.settings import Settings
 from src.dashboard.charts import build_cashflow_trend, build_invoices_status_chart
 from src.dashboard.kpis import compute_kpis
+from src.dashboard.profit_and_loss import compute_profit_and_loss
 from src.dashboard.tables import filter_invoices
 from src.integrations.bexio.client import BexioClient
 from src.integrations.bexio.models import OAuthToken
@@ -296,6 +297,41 @@ def _load_real_invoices(settings: Settings) -> pd.DataFrame | None:
 
     return df[["document_nr", "contact_name", "status", "amount", "date"]]
 
+def _load_profit_and_loss(
+    settings: Settings,
+    *,
+    start_date: date,
+    end_date: date,
+) -> tuple[float, float, float, pd.DataFrame] | None:
+    token = _get_oauth_token_from_session()
+    if not isinstance(token, OAuthToken):
+        return None
+
+    client = BexioClient(settings, token=token)
+    try:
+        # Accounts can be cached more aggressively than journal rows (we use TTLCache inside the client).
+        accounts = client.list_accounts_v2()
+        journal = client.list_accounting_journal(
+            from_date=start_date.isoformat(),
+            to_date=end_date.isoformat(),
+        )
+    except Exception as exc:
+        st.warning(f"Connected but failed to load Profit & Loss from Bexio: {exc}")
+        st.info(
+            "Troubleshooting tips:\n"
+            "- Ensure your OAuth app requested the `accounting` scope\n"
+            "- Ensure the user has accounting permissions in Bexio\n"
+            "- Try 'Reset Bexio session / Reconnect' to re-authorize with new scopes"
+        )
+        try:
+            client.clear_cache()
+        except Exception:
+            pass
+        return None
+
+    pnl = compute_profit_and_loss(journal_rows=journal, accounts_rows=accounts)
+    return pnl.income, pnl.expenses, pnl.net_profit, pnl.by_account
+
 
 def _invoices_to_transactions(invoices_df: pd.DataFrame) -> pd.DataFrame:
     df = invoices_df.copy()
@@ -359,7 +395,7 @@ def render_dashboard_page(settings: Settings) -> None:
     c5.metric("Open Payables", f"{kpis.open_payables:,.0f} {currency}")
     c6.metric("Cashflow Trend (MoM)", f"{kpis.cashflow_mom_pct:,.1f}%")
 
-    tab1, tab2, tab3, tab4 = st.tabs(["Overview", "Cashflow Trend", "Invoices", "Payments"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Overview", "Cashflow Trend", "Invoices", "Payments", "Profit & Loss"])
 
     with tab1:
         st.plotly_chart(build_invoices_status_chart(invoices_df), width="stretch")
@@ -383,3 +419,22 @@ def render_dashboard_page(settings: Settings) -> None:
         pending = invoices_df[invoices_df["status"].str.lower() == "open"]["amount"].sum()
         st.write(f"Received: {paid:,.0f} {currency}")
         st.write(f"Pending: {pending:,.0f} {currency}")
+
+    with tab5:
+        st.markdown("### Profit & Loss")
+        pnl = _load_profit_and_loss(settings, start_date=start_date, end_date=end_date)
+        if pnl is None:
+            st.info("Connect to Bexio to load Profit & Loss (built from accounting journal entries).")
+        else:
+            income, expenses, net_profit, by_account = pnl
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Income", f"{income:,.0f} {currency}")
+            c2.metric("Expenses", f"{expenses:,.0f} {currency}")
+            c3.metric("Net Profit", f"{net_profit:,.0f} {currency}")
+
+            st.caption(
+                "Source: `GET /3.0/accounting/journal` aggregated by account. "
+                "Account classification is currently heuristic (3xxx=income, 4xxx–8xxx=expense)."
+            )
+
+            st.dataframe(by_account, width="stretch")

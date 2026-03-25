@@ -19,6 +19,7 @@ class Settings:
     bexio_auth_base_url: str
     bexio_oauth_scope: str
     bexio_api_base_url: str
+    bexio_accounting_api_base_url: str
     openrouter_api_key: str
     openrouter_model: str
     openrouter_base_url: str
@@ -60,6 +61,10 @@ def get_settings() -> Settings:
             "kb_invoice_show kb_order_show offline_access",
         ),
         bexio_api_base_url=_read_value("BEXIO_API_BASE_URL", "https://api.bexio.com/2.0"),
+        bexio_accounting_api_base_url=_read_value(
+            "BEXIO_ACCOUNTING_API_BASE_URL",
+            "https://api.bexio.com/3.0",
+        ),
         openrouter_api_key=_read_value("OPENROUTER_API_KEY"),
         openrouter_model=_read_value("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
         openrouter_base_url=_read_value("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),

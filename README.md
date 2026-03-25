@@ -35,6 +35,7 @@ Reportio is a local-first Streamlit financial dashboard with Bexio integration a
 - Use `BEXIO_AUTH_BASE_URL=https://auth.bexio.com/realms/bexio` (new IdP).
 - `BEXIO_OAUTH_SCOPE` is optional (defaults to `kb_invoice_show kb_order_show offline_access`).
 - Include only scopes enabled for your OAuth app in the Bexio developer portal. Required for invoices: `kb_invoice_show`. For orders: `kb_order_show`. `offline_access` enables refresh tokens.
+- Profit & Loss is built from the accounting journal endpoint (`GET /3.0/accounting/journal`) and requires the `accounting` scope.
 - After login/consent, Bexio redirects back to your configured `BEXIO_REDIRECT_URI`.
 - The app exchanges `code` for tokens and stores token state in Streamlit session state for the current browser session.
 - Access tokens auto-refresh when near expiry.

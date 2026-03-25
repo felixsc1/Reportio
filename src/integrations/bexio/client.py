@@ -22,6 +22,10 @@ class BexioClient:
         self.token = token
         self.cache = TTLCache(settings.cache_ttl_seconds)
         self._client = httpx.Client(base_url=settings.bexio_api_base_url.rstrip("/"), timeout=30.0)
+        self._accounting_client = httpx.Client(
+            base_url=settings.bexio_accounting_api_base_url.rstrip("/"),
+            timeout=30.0,
+        )
 
     def set_token(self, token: OAuthToken) -> None:
         self.token = token
@@ -47,22 +51,33 @@ class BexioClient:
         wait=wait_exponential(multiplier=1, min=1, max=8),
         retry=retry_if_exception_type((httpx.TimeoutException, httpx.NetworkError)),
     )
-    def _request(self, method: str, endpoint: str, json_body: Any | None = None) -> list[dict[str, Any]]:
+    def _request(
+        self,
+        method: str,
+        endpoint: str,
+        json_body: Any | None = None,
+        params: dict[str, Any] | None = None,
+        *,
+        use_accounting_api: bool = False,
+    ) -> list[dict[str, Any]]:
         headers = self._headers()
+        client = self._accounting_client if use_accounting_api else self._client
         logger.info(
-            "Bexio API request: %s %s | Content-Type=%s | body_type=%s | body=%s", 
+            "Bexio API request: %s %s | Content-Type=%s | params=%s | body_type=%s | body=%s",
             method, 
             endpoint, 
             headers.get("Content-Type"), 
+            params,
             type(json_body).__name__,
             json_body if json_body is None or len(str(json_body)) < 100 else "[...]"
         )
 
-        response = self._client.request(
+        response = client.request(
             method, 
             endpoint, 
             headers=headers, 
-            json=json_body
+            json=json_body,
+            params=params,
         )
 
         logger.info("Bexio API response: %s %s -> %s", method, endpoint, response.status_code)
@@ -98,6 +113,23 @@ class BexioClient:
         self.cache.set(cache_key, rows)
         return rows
 
+    def _cached_get(
+        self,
+        endpoint: str,
+        params: dict[str, Any] | None = None,
+        *,
+        use_accounting_api: bool = False,
+    ) -> list[dict[str, Any]]:
+        cache_key = f"GET:{'v3' if use_accounting_api else 'v2'}:{endpoint}:{json.dumps(params or {}, sort_keys=True)}"
+        cached = self.cache.get(cache_key)
+        if cached is not None:
+            logger.debug("Cache hit for %s", cache_key)
+            return cached
+
+        rows = self._request("GET", endpoint, json_body=None, params=params, use_accounting_api=use_accounting_api)
+        self.cache.set(cache_key, rows)
+        return rows
+
     def _paginated_post(self, endpoint: str, base_payload: dict[str, Any] | list | None = None) -> list[dict[str, Any]]:
         # Bexio search expects a JSON array of filter objects.
         # Empty list `[]` should return all records. If it fails, we try a minimal filter.
@@ -122,6 +154,29 @@ class BexioClient:
             offset += limit
         return all_rows
 
+    def _paginated_get(
+        self,
+        endpoint: str,
+        *,
+        params: dict[str, Any] | None = None,
+        limit_param: str = "limit",
+        offset_param: str = "offset",
+        page_size: int = 2000,
+        use_accounting_api: bool = False,
+    ) -> list[dict[str, Any]]:
+        all_rows: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            page_params = dict(params or {})
+            page_params[limit_param] = page_size
+            page_params[offset_param] = offset
+            page_rows = self._cached_get(endpoint, page_params, use_accounting_api=use_accounting_api)
+            all_rows.extend(page_rows)
+            if len(page_rows) < page_size:
+                break
+            offset += page_size
+        return all_rows
+
     def list_invoices(self, include_open: bool = True, include_paid: bool = True) -> list[dict[str, Any]]:
         rows = self._paginated_post("/kb_invoice/search")
         if include_open and include_paid:
@@ -142,6 +197,31 @@ class BexioClient:
     def list_accounts(self) -> list[dict[str, Any]]:
         return self._paginated_post("/account/search")
 
+    def list_accounting_journal(
+        self,
+        *,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        account_uuid: str | None = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {}
+        if from_date:
+            params["from"] = from_date
+        if to_date:
+            params["to"] = to_date
+        if account_uuid:
+            params["account_uuid"] = account_uuid
+        return self._paginated_get(
+            "/accounting/journal",
+            params=params,
+            page_size=2000,
+            use_accounting_api=True,
+        )
+
+    def list_accounts_v2(self) -> list[dict[str, Any]]:
+        # v2 endpoint (2.0) returns numeric ids + account_no + name which we can use for P&L mapping.
+        return self._paginated_get("/accounts", page_size=2000, use_accounting_api=False)
+
     def search(self, endpoint: str, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         if not endpoint.startswith("/"):
             endpoint = f"/{endpoint}"
@@ -156,3 +236,4 @@ class BexioClient:
 
     def close(self) -> None:
         self._client.close()
+        self._accounting_client.close()
