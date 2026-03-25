@@ -1,6 +1,6 @@
 venv/
 bexio_debug/
-
+.env
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

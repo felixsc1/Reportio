@@ -21,6 +21,11 @@ from src.agents.tools import (
 )
 from src.config.settings import Settings
 
+try:
+    from langchain_ollama import ChatOllama
+except Exception:  # pragma: no cover
+    ChatOllama = None  # type: ignore[assignment]
+
 
 SYSTEM_PROMPT = (
     "You are Reportio AI, a financial assistant for Bexio users. "
@@ -29,9 +34,27 @@ SYSTEM_PROMPT = (
 )
 
 
-def _build_model(settings: Settings, model_name: str | None = None) -> ChatOpenAI:
+def _looks_like_ollama_local_model(model_name: str) -> bool:
+    # OpenRouter model ids generally look like `vendor/model`, while Ollama models are usually plain
+    # names like `qwen3:8b` (or sometimes use an `ollama:` prefix).
+    if model_name.startswith("ollama:"):
+        return True
+    return "/" not in model_name
+
+
+def _build_model(settings: Settings, model_name: str | None = None) -> Any:
+    selected = model_name or settings.openrouter_model
+
+    if _looks_like_ollama_local_model(selected):
+        if ChatOllama is None:  # pragma: no cover
+            raise RuntimeError(
+                "Ollama support requires `langchain-ollama`. Install dependencies or choose a hosted model."
+            )
+        normalized = selected.removeprefix("ollama:")
+        return ChatOllama(model=normalized, base_url=settings.ollama_base_url, temperature=0.1)
+
     return ChatOpenAI(
-        model=model_name or settings.openrouter_model,
+        model=selected,
         api_key=settings.openrouter_api_key,
         base_url=settings.openrouter_base_url,
         temperature=0.1,

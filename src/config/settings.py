@@ -23,6 +23,7 @@ class Settings:
     openrouter_api_key: str
     openrouter_model: str
     openrouter_base_url: str
+    ollama_base_url: str
 
 
 def _get_streamlit_secret(key: str) -> str | None:
@@ -68,4 +69,5 @@ def get_settings() -> Settings:
         openrouter_api_key=_read_value("OPENROUTER_API_KEY"),
         openrouter_model=_read_value("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
         openrouter_base_url=_read_value("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+        ollama_base_url=_read_value("OLLAMA_BASE_URL", "http://localhost:11434"),
     )

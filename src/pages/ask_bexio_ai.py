@@ -9,21 +9,37 @@ import streamlit as st
 from src.agents.graph import build_agent, run_agent_query
 from src.agents.tools import create_chart, create_dynamic_table
 from src.config.settings import Settings
+from src.integrations.ollama.client import list_local_ollama_models
+
+
+LOCAL_OLLAMA_DEFAULT_MODEL = "qwen3:8b"
+
+
+@st.cache_data(ttl=30)
+def _fetch_local_models_cached(base_url: str) -> list[str]:
+    return list_local_ollama_models(base_url)
 
 
 def render_ai_page(settings: Settings) -> None:
     st.header("Ask Bexio AI")
-    model_choice = st.selectbox(
-        "Model",
-        options=[
-            settings.openrouter_model,
-            "anthropic/claude-3.5-sonnet",
-            "anthropic/claude-3.7-sonnet",
-            "openai/gpt-4o",
-            "x-ai/grok-2-1212",
-        ],
-        index=0,
-    )
+
+    remote_models = [
+        settings.openrouter_model,
+        "anthropic/claude-3.5-sonnet",
+        "anthropic/claude-3.7-sonnet",
+        "openai/gpt-4o",
+        "x-ai/grok-2-1212",
+    ]
+
+    local_models = _fetch_local_models_cached(settings.ollama_base_url)
+    local_dropdown_models = [LOCAL_OLLAMA_DEFAULT_MODEL] + [
+        m for m in local_models if m != LOCAL_OLLAMA_DEFAULT_MODEL
+    ]
+
+    model_options = [*local_dropdown_models, *remote_models]
+    default_index = model_options.index(LOCAL_OLLAMA_DEFAULT_MODEL) if LOCAL_OLLAMA_DEFAULT_MODEL in model_options else 0
+
+    model_choice = st.selectbox("Model", options=model_options, index=default_index)
 
     if "agent_app" not in st.session_state or st.session_state.get("agent_model") != model_choice:
         st.session_state["agent_app"] = build_agent(settings, model_choice)
