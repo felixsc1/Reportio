@@ -206,8 +206,13 @@ def _load_real_invoices(settings: Settings) -> pd.DataFrame | None:
             # Never block dashboard rendering due to debug dump failures.
             pass
 
+    # Prefer the invoice validity date (changes per document), not `updated_at` (often clustered recently).
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    elif "is_valid_from" in df.columns:
+        df["date"] = pd.to_datetime(df["is_valid_from"], errors="coerce")
+    elif "is_valid_to" in df.columns:
+        df["date"] = pd.to_datetime(df["is_valid_to"], errors="coerce")
     elif "updated_at" in df.columns:
         df["date"] = pd.to_datetime(df["updated_at"], errors="coerce")
     else:
@@ -239,7 +244,17 @@ def _load_real_invoices(settings: Settings) -> pd.DataFrame | None:
             df["contact_name"] = "Unknown"
 
     if "amount" not in df.columns:
-        for candidate in ["total", "total_net", "total_gross", "amount"]:
+        # For cashflow / receivables KPIs, outstanding amount is typically driven by remaining payments.
+        # We will later override paid invoices with received payments.
+        for candidate in [
+            "total_remaining_payments",
+            "total_remaining_amount",
+            "total_remaining_payment",
+            "total",
+            "total_net",
+            "total_gross",
+            "amount",
+        ]:
             if candidate in df.columns:
                 df["amount"] = pd.to_numeric(df[candidate], errors="coerce").fillna(0.0)
                 break
@@ -266,6 +281,12 @@ def _load_real_invoices(settings: Settings) -> pd.DataFrame | None:
             if received is not None:
                 partial_mask = (remaining > 0) & (received > 0)
                 df.loc[partial_mask, "status"] = "partially_paid"
+
+            # For paid invoices, the cash-in KPI should reflect received payments, not remaining.
+            if received is not None:
+                df.loc[df["status"] == "paid", "amount"] = pd.to_numeric(
+                    received, errors="coerce"
+                ).fillna(0.0)[df["status"] == "paid"]
         else:
             # Fallback: keep something usable for debugging.
             if "kb_item_status_id" in df.columns:
@@ -323,7 +344,12 @@ def render_dashboard_page(settings: Settings) -> None:
     else:
         transactions_df = _invoices_to_transactions(invoices_df)
         st.success("Connected to Bexio. Dashboard uses live invoice data.")
-    kpis = compute_kpis(transactions_df)
+
+    # Apply the selected date range to the cashflow KPIs and trend chart as well.
+    tx_mask = (transactions_df["date"].dt.date >= start_date) & (transactions_df["date"].dt.date <= end_date)
+    transactions_df_for_kpis = transactions_df.loc[tx_mask]
+
+    kpis = compute_kpis(transactions_df_for_kpis)
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Cash In", f"{kpis.cash_in:,.0f} {currency}")
@@ -340,7 +366,7 @@ def render_dashboard_page(settings: Settings) -> None:
         st.caption("Data source: Bexio" if using_real_data else "Data source: Dummy seed data")
 
     with tab2:
-        st.plotly_chart(build_cashflow_trend(transactions_df), width="stretch")
+        st.plotly_chart(build_cashflow_trend(transactions_df_for_kpis), width="stretch")
 
     with tab3:
         st.markdown("### Invoices")

@@ -19,13 +19,16 @@ def compute_kpis(df: pd.DataFrame) -> CashflowKpis:
     if df.empty:
         return CashflowKpis(0, 0, 0, 0, 0, 0)
 
-    cash_in = float(df.loc[df["type"] == "in", "amount"].sum())
-    cash_out = float(df.loc[df["type"] == "out", "amount"].sum())
-    open_receivables = float(df.loc[df["status"] == "open_receivable", "amount"].sum())
-    open_payables = float(df.loc[df["status"] == "open_payable", "amount"].sum())
+    status_l = df["status"].astype(str).str.lower()
+    cash_in = float(df.loc[(df["type"] == "in") & (status_l == "paid"), "amount"].sum())
+    cash_out = float(df.loc[(df["type"] == "out") & (status_l == "paid"), "amount"].sum())
+    open_receivables = float(df.loc[status_l == "open_receivable", "amount"].sum())
+    open_payables = float(df.loc[status_l == "open_payable", "amount"].sum())
     net = cash_in - cash_out
 
-    monthly = df.groupby(df["date"].dt.to_period("M"))["signed_amount"].sum()
+    # Cashflow trend should reflect cash movements (paid), not outstanding receivables.
+    paid_df = df.loc[status_l == "paid"]
+    monthly = paid_df.groupby(paid_df["date"].dt.to_period("M"))["signed_amount"].sum()
     if len(monthly) > 1 and monthly.iloc[-2] != 0:
         mom = ((monthly.iloc[-1] - monthly.iloc[-2]) / abs(monthly.iloc[-2])) * 100
     else:
