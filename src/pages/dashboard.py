@@ -96,20 +96,6 @@ def _render_oauth_panel(settings: Settings) -> None:
     client = BexioClient(settings)
     auth_url = client.oauth.build_authorization_url(state=state)
     st.markdown(f"[Connect with Bexio]({auth_url})")
-    st.caption(f"Requested scope: `{settings.bexio_oauth_scope or '(none - app default)'}`")
-
-    with st.expander("Connection diagnostics", expanded=False):
-        qp_code = st.query_params.get("code")
-        qp_state = st.query_params.get("state")
-        qp_error = st.query_params.get("error")
-        qp_error_desc = st.query_params.get("error_description")
-        token = _get_oauth_token_from_session()
-        st.write(f"Has callback code: {'yes' if qp_code else 'no'}")
-        st.write(f"Has callback state: {'yes' if qp_state else 'no'}")
-        st.write(f"Session token present: {'yes' if token else 'no'}")
-        st.write(f"OAuth error: {qp_error or 'none'}")
-        st.write(f"OAuth error description: {qp_error_desc or 'none'}")
-        st.write(f"Current redirect URI: `{settings.bexio_redirect_uri}`")
 
     existing_token = _get_oauth_token_from_session()
     if existing_token is not None:
@@ -140,7 +126,6 @@ def _render_oauth_panel(settings: Settings) -> None:
                 "expires_at": token.expires_at.isoformat(),
                 "token_type": token.token_type,
             }
-            st.success("Bexio connected successfully.")
             st.query_params.clear()
             st.rerun()
         except Exception as exc:
@@ -361,8 +346,7 @@ def _invoices_to_transactions(invoices_df: pd.DataFrame) -> pd.DataFrame:
 def render_dashboard_page(settings: Settings) -> None:
     presets = ["This Month", "QTD", "YTD", "Custom"]
     selected_preset = st.sidebar.selectbox("Date Range", presets, index=0)
-    currency = st.sidebar.selectbox("Currency", ["CHF", "EUR", "USD"], index=0)
-    st.sidebar.selectbox("Company", ["Default"], index=0)
+    currency = "CHF"
 
     if selected_preset == "Custom":
         start_date = st.sidebar.date_input("Start Date", value=date(date.today().year, 1, 1))
@@ -379,7 +363,6 @@ def render_dashboard_page(settings: Settings) -> None:
         transactions_df = _dummy_transactions()
     else:
         transactions_df = _invoices_to_transactions(invoices_df)
-        st.success("Connected to Bexio. Dashboard uses live invoice data.")
 
     # Apply the selected date range to the cashflow KPIs and trend chart as well.
     tx_mask = (transactions_df["date"].dt.date >= start_date) & (transactions_df["date"].dt.date <= end_date)
