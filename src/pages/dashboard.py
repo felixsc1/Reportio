@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+import json
+from pathlib import Path
 from uuid import uuid4
 
 import pandas as pd
@@ -174,21 +176,103 @@ def _load_real_invoices(settings: Settings) -> pd.DataFrame | None:
     }
     if not invoices:
         return pd.DataFrame(columns=["document_nr", "contact_name", "status", "amount", "date"])
+
     df = pd.DataFrame(invoices)
+    raw_columns = set(df.columns)
+
+    # If Bexio returns different field names than we expect (e.g. no `amount`/`status`/`contact_name`),
+    # we dump a small sample locally to quickly reverse engineer the schema.
+    if not st.session_state.get("bexio_invoice_schema_dumped", False) and (
+        ("amount" not in raw_columns) or ("status" not in raw_columns) or ("contact_name" not in raw_columns)
+    ):
+        try:
+            repo_root = Path(__file__).resolve().parents[2]
+            out_dir = repo_root / "bexio_debug"
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            sample = invoices[0] if invoices else {}
+            ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+            out_path = out_dir / f"invoices_schema_sample_{ts}.json"
+            debug_payload = {
+                "count": len(invoices),
+                "sample_keys": sorted(list(sample.keys())),
+                # Ensure it stays JSON-serializable (datetime strings etc).
+                "sample": sample,
+            }
+            out_path.write_text(json.dumps(debug_payload, default=str, ensure_ascii=True, indent=2), encoding="utf-8")
+            st.session_state["bexio_invoice_schema_dumped"] = True
+            st.info(f"Debug: wrote Bexio invoice schema sample to `{out_path}`")
+        except Exception:
+            # Never block dashboard rendering due to debug dump failures.
+            pass
+
     if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
     elif "updated_at" in df.columns:
         df["date"] = pd.to_datetime(df["updated_at"], errors="coerce")
     else:
         df["date"] = pd.Timestamp.utcnow()
-    if "contact_name" not in df.columns:
-        df["contact_name"] = "Unknown"
+
+    # Best-effort mapping from Bexio fields to our dashboard schema.
     if "document_nr" not in df.columns:
-        df["document_nr"] = df.index.astype(str)
-    if "status" not in df.columns:
-        df["status"] = "unknown"
+        for candidate in ["document_nr", "reference", "kb_invoice_id", "id"]:
+            if candidate in df.columns:
+                df["document_nr"] = df[candidate].astype(str)
+                break
+        else:
+            df["document_nr"] = df.index.astype(str)
+
+    if "contact_name" not in df.columns:
+        if "contact_address" in df.columns:
+            # Bexio typically prefixes the address block with the company/contact name.
+            df["contact_name"] = (
+                df["contact_address"]
+                .fillna("")
+                .astype(str)
+                .str.split(r"\r?\n")
+                .str[0]
+                .replace("", "Unknown")
+            )
+        elif "contact_id" in df.columns:
+            df["contact_name"] = "Contact " + df["contact_id"].astype(str)
+        else:
+            df["contact_name"] = "Unknown"
+
     if "amount" not in df.columns:
-        df["amount"] = 0.0
+        for candidate in ["total", "total_net", "total_gross", "amount"]:
+            if candidate in df.columns:
+                df["amount"] = pd.to_numeric(df[candidate], errors="coerce").fillna(0.0)
+                break
+        else:
+            df["amount"] = 0.0
+
+    if "status" not in df.columns:
+        # Prefer deriving status from remaining/open amounts, which lets us classify paid/open/partially_paid.
+        remaining = None
+        for candidate in ["total_remaining_payments", "total_remaining_amount", "total_remaining_payment"]:
+            if candidate in df.columns:
+                remaining = pd.to_numeric(df[candidate], errors="coerce").fillna(0.0)
+                break
+
+        received = None
+        for candidate in ["total_received_payments", "total_received_amount", "total_received_payment"]:
+            if candidate in df.columns:
+                received = pd.to_numeric(df[candidate], errors="coerce").fillna(0.0)
+                break
+
+        if remaining is not None:
+            df["status"] = "open"
+            df.loc[remaining <= 0, "status"] = "paid"
+            if received is not None:
+                partial_mask = (remaining > 0) & (received > 0)
+                df.loc[partial_mask, "status"] = "partially_paid"
+        else:
+            # Fallback: keep something usable for debugging.
+            if "kb_item_status_id" in df.columns:
+                df["status"] = df["kb_item_status_id"].astype(str)
+            else:
+                df["status"] = "unknown"
+
     return df[["document_nr", "contact_name", "status", "amount", "date"]]
 
 
