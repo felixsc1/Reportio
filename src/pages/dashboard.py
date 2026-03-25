@@ -252,11 +252,11 @@ def render_dashboard_page(settings: Settings) -> None:
     tab1, tab2, tab3, tab4 = st.tabs(["Overview", "Cashflow Trend", "Invoices", "Payments"])
 
     with tab1:
-        st.plotly_chart(build_invoices_status_chart(invoices_df), use_container_width=True)
+        st.plotly_chart(build_invoices_status_chart(invoices_df), width="stretch")
         st.caption("Data source: Bexio" if using_real_data else "Data source: Dummy seed data")
 
     with tab2:
-        st.plotly_chart(build_cashflow_trend(transactions_df), use_container_width=True)
+        st.plotly_chart(build_cashflow_trend(transactions_df), width="stretch")
 
     with tab3:
         st.markdown("### Invoices")
@@ -265,7 +265,7 @@ def render_dashboard_page(settings: Settings) -> None:
         search_text = st.text_input("Search (contact or document no.)", value="")
         filtered = filter_invoices(invoices_df, status_filter or None, min_amount or None, search_text or None)
         mask = (filtered["date"].dt.date >= start_date) & (filtered["date"].dt.date <= end_date)
-        st.dataframe(filtered.loc[mask], use_container_width=True)
+        st.dataframe(filtered.loc[mask], width="stretch")
 
     with tab4:
         st.markdown("### Payments")

@@ -38,9 +38,9 @@ def render_ai_page(settings: Settings) -> None:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             if msg.get("table") is not None:
-                st.dataframe(pd.DataFrame(msg["table"]), use_container_width=True)
+                st.dataframe(pd.DataFrame(msg["table"]), width="stretch")
             if msg.get("chart") is not None:
-                st.plotly_chart(go.Figure(msg["chart"]), use_container_width=True)
+                st.plotly_chart(go.Figure(msg["chart"]), width="stretch")
 
     if not prompt:
         return
@@ -61,6 +61,6 @@ def render_ai_page(settings: Settings) -> None:
     with st.chat_message("assistant"):
         st.markdown(assistant_msg["content"])
         if assistant_msg.get("table") is not None:
-            st.dataframe(pd.DataFrame(assistant_msg["table"]), use_container_width=True)
+            st.dataframe(pd.DataFrame(assistant_msg["table"]), width="stretch")
         if assistant_msg.get("chart") is not None:
-            st.plotly_chart(go.Figure(assistant_msg["chart"]), use_container_width=True)
+            st.plotly_chart(go.Figure(assistant_msg["chart"]), width="stretch")
