@@ -5,6 +5,7 @@ import streamlit as st
 from src.config.settings import get_settings
 from src.pages.ask_bexio_ai import render_ai_page
 from src.pages.dashboard import render_dashboard_page
+from src.pages.personio import render_personio_page
 from src.utils.logging import configure_logging
 
 
@@ -16,9 +17,11 @@ def main() -> None:
     st.title("Reportio")
     st.caption("Bexio-powered financial dashboard with AI assistant")
 
-    page = st.sidebar.radio("Navigation", ["Dashboard", "Ask Bexio AI"], index=0)
+    page = st.sidebar.radio("Navigation", ["Dashboard", "Personio", "Ask Bexio AI"], index=0)
     if page == "Dashboard":
         render_dashboard_page(settings)
+    elif page == "Personio":
+        render_personio_page(settings)
     else:
         render_ai_page(settings)
 

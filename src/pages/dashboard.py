@@ -394,7 +394,7 @@ def render_dashboard_page(settings: Settings) -> None:
         search_text = st.text_input("Search (contact or document no.)", value="")
         filtered = filter_invoices(invoices_df, status_filter or None, min_amount or None, search_text or None)
         mask = (filtered["date"].dt.date >= start_date) & (filtered["date"].dt.date <= end_date)
-        st.dataframe(filtered.loc[mask], width="stretch")
+        st.dataframe(filtered.loc[mask], width="stretch", hide_index=True)
 
     with tab4:
         st.markdown("### Payments")
@@ -420,4 +420,4 @@ def render_dashboard_page(settings: Settings) -> None:
                 "Account classification is currently heuristic (3xxx=income, 4xxx–8xxx=expense)."
             )
 
-            st.dataframe(by_account, width="stretch")
+            st.dataframe(by_account, width="stretch", hide_index=True)

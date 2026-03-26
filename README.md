@@ -7,6 +7,7 @@ Reportio is a local-first Streamlit financial dashboard with Bexio integration a
 - Bexio OAuth2 authorization code flow wiring (with refresh token support).
 - `BexioClient` wrappers for invoices, orders/quotes, journal entries, accounts, and generic search.
 - Dashboard page with date filters, KPI cards, Plotly charts, invoice filters/search, and payments summary.
+- Personio page with employee/date filters, attendance and absence tables, project hour breakdown, and mismatch cue.
 - "Ask Bexio AI" page using LangGraph + OpenRouter model selection.
 - Controlled dynamic table/chart generation through a restricted sandbox.
 
@@ -26,6 +27,7 @@ Reportio is a local-first Streamlit financial dashboard with Bexio integration a
 3. Copy env template:
    - `copy .env.example .env`
 4. Fill in `BEXIO_*` and `OPENROUTER_*` values.
+   - Optional: fill in `PERSONIO_*` values to use the Personio page.
 5. Run app:
    - `python -m streamlit run app.py`
 
@@ -39,6 +41,15 @@ Reportio is a local-first Streamlit financial dashboard with Bexio integration a
 - After login/consent, Bexio redirects back to your configured `BEXIO_REDIRECT_URI`.
 - The app exchanges `code` for tokens and stores token state in Streamlit session state for the current browser session.
 - Access tokens auto-refresh when near expiry.
+
+## Personio integration (client credentials)
+
+- Configure `PERSONIO_CLIENT_ID` and `PERSONIO_CLIENT_SECRET`.
+- `PERSONIO_API_BASE_URL` defaults to `https://api.personio.de/v1`.
+- The app authenticates server-side via `POST /auth` and uses the returned bearer token for API calls.
+- Personio page supports `Current Month` and custom ranges, plus active employee filtering.
+- Project breakdown uses attendance project-like fields when available and falls back to `Unassigned`.
+- Mismatch warning compares attendance hours to an expected-hours estimate from `weekly_hours`; public holidays are not included in this estimate.
 
 ## Running tests
 
