@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import streamlit as st
 
 from src.config.settings import get_settings
@@ -14,13 +16,15 @@ def main() -> None:
     configure_logging(settings.log_level)
     st.set_page_config(page_title="Reportio", page_icon=":bar_chart:", layout="wide")
 
+    logo_path = Path(__file__).resolve().parent / "assets" / "reportio_logo.jpg"
+    st.sidebar.image(str(logo_path), use_container_width=True)
     st.title("Reportio")
     st.caption("Bexio-powered financial dashboard with AI assistant")
 
-    page = st.sidebar.radio("Navigation", ["Dashboard", "Personio", "Ask Bexio AI"], index=0)
-    if page == "Dashboard":
+    page = st.sidebar.radio("Navigation", ["Bexio Dashboard", "Personio Dashboard", "Ask Reportio AI"], index=0)
+    if page == "Bexio Dashboard":
         render_dashboard_page(settings)
-    elif page == "Personio":
+    elif page == "Personio Dashboard":
         render_personio_page(settings)
     else:
         render_ai_page(settings)

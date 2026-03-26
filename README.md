@@ -2,13 +2,15 @@
 
 Reportio is a local-first Streamlit financial dashboard with Bexio integration and a LangGraph-based AI assistant.
 
+![Reportio logo](assets/reportio_logo.jpg)
+
 ## Features in this MVP
 
 - Bexio OAuth2 authorization code flow wiring (with refresh token support).
 - `BexioClient` wrappers for invoices, orders/quotes, journal entries, accounts, and generic search.
 - Dashboard page with date filters, KPI cards, Plotly charts, invoice filters/search, and payments summary.
 - Personio page with employee/date filters, attendance and absence tables, project hour breakdown, and mismatch cue.
-- "Ask Bexio AI" page using LangGraph + OpenRouter model selection.
+- "Ask Reportio AI" page using LangGraph + OpenRouter model selection.
 - Controlled dynamic table/chart generation through a restricted sandbox.
 
 ## Tech stack

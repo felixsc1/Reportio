@@ -21,7 +21,7 @@ def _fetch_local_models_cached(base_url: str) -> list[str]:
 
 
 def render_ai_page(settings: Settings) -> None:
-    st.header("Ask Bexio AI")
+    st.header("Ask Reportio AI")
 
     remote_models = [
         settings.openrouter_model,

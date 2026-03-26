@@ -344,6 +344,7 @@ def _invoices_to_transactions(invoices_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def render_dashboard_page(settings: Settings) -> None:
+    st.header("Bexio Dashboard")
     presets = ["This Month", "QTD", "YTD", "Custom"]
     selected_preset = st.sidebar.selectbox("Date Range", presets, index=0)
     currency = "CHF"

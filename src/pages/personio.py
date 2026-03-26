@@ -29,8 +29,8 @@ def _expected_hours_in_range(weekly_hours: float | None, start_date: date, end_d
 
 
 def render_personio_page(settings: Settings) -> None:
-    st.header("Personio Attendance and Absence")
-    st.caption("Employee time overview with project breakdown.")
+    st.header("Personio Dashboard")
+    st.caption("Attendance and absence overview with project breakdown.")
 
     presets = ["Current Month", "Custom"]
     selected_preset = st.sidebar.selectbox("Personio Date Range", presets, index=0)
