@@ -6,10 +6,11 @@ from pathlib import Path
 from uuid import uuid4
 
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 
-from src.config.settings import Settings
-from src.dashboard.charts import build_cashflow_trend, build_invoices_status_chart
+from src.config.settings import Settings, get_settings
+from src.dashboard.charts import build_invoices_status_chart
 from src.dashboard.kpis import compute_kpis
 from src.dashboard.profit_and_loss import compute_profit_and_loss
 from src.dashboard.tables import filter_invoices
@@ -343,6 +344,176 @@ def _invoices_to_transactions(invoices_df: pd.DataFrame) -> pd.DataFrame:
     return tx
 
 
+def _safe_float(value: object) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _extract_date(value: object) -> date | None:
+    if value is None:
+        return None
+    try:
+        parsed = pd.to_datetime(value, errors="coerce")
+    except Exception:
+        return None
+    if pd.isna(parsed):
+        return None
+    return parsed.date()
+
+
+def _is_invoice_paid(invoice: dict[str, object]) -> bool:
+    total = _safe_float(invoice.get("total"))
+    received = _safe_float(invoice.get("total_received_payments"))
+    vouchers = _safe_float(invoice.get("total_credit_vouchers"))
+    if total > 0 and (received + vouchers) >= total:
+        return True
+    return str(invoice.get("status", "")).strip().lower() in {"paid", "bezahlt", "done"}
+
+
+def _is_bill_paid(bill: dict[str, object]) -> bool:
+    total = _safe_float(bill.get("total"))
+    paid = _safe_float(bill.get("total_paid"))
+    if total > 0 and paid >= total:
+        return True
+    return str(bill.get("status", "")).strip().lower() in {"paid", "bezahlt", "done"}
+
+
+def _token_cache_key(token: OAuthToken) -> str:
+    return f"{token.access_token[-12:]}:{token.expires_at.isoformat()}"
+
+
+@st.cache_data(show_spinner=False)
+def _fetch_cashflow_rows(
+    start_date_iso: str,
+    end_date_iso: str,
+    token_key: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    del token_key  # only used for Streamlit cache invalidation
+    token = _get_oauth_token_from_session()
+    table_columns = ["Payment Date", "Amount", "Document Nr.", "Contact Name", "Title/Description"]
+    if token is None:
+        return pd.DataFrame(columns=table_columns), pd.DataFrame(columns=table_columns)
+
+    client = BexioClient(get_settings(), token=token)
+    start = date.fromisoformat(start_date_iso)
+    end = date.fromisoformat(end_date_iso)
+
+    inflow_rows: list[dict[str, object]] = []
+    outflow_rows: list[dict[str, object]] = []
+
+    invoices = client.list_invoices_v2(page_size=500)
+    for invoice in invoices:
+        if not _is_invoice_paid(invoice):
+            continue
+        invoice_id = invoice.get("id")
+        if invoice_id is None:
+            continue
+        for payment in client.list_invoice_payments(invoice_id):
+            payment_date = _extract_date(payment.get("date"))
+            if payment_date is None or payment_date < start or payment_date > end:
+                continue
+            inflow_rows.append(
+                {
+                    "Payment Date": payment_date,
+                    "Amount": _safe_float(payment.get("value")),
+                    "Document Nr.": str(invoice.get("document_nr") or invoice_id),
+                    "Contact Name": str(invoice.get("contact_name") or invoice.get("contact_id") or "Unknown"),
+                    "Title/Description": str(invoice.get("title") or invoice.get("api_reference") or ""),
+                }
+            )
+
+    bills = client.list_bills_v2(page_size=500)
+    for bill in bills:
+        if not _is_bill_paid(bill):
+            continue
+        bill_id = bill.get("id")
+        if bill_id is None:
+            continue
+        for payment in client.list_bill_payments(bill_id):
+            payment_date = _extract_date(payment.get("date"))
+            if payment_date is None or payment_date < start or payment_date > end:
+                continue
+            outflow_rows.append(
+                {
+                    "Payment Date": payment_date,
+                    "Amount": _safe_float(payment.get("value")),
+                    "Document Nr.": str(bill.get("document_nr") or bill.get("vendor_bill_nr") or bill_id),
+                    "Contact Name": str(bill.get("contact_name") or bill.get("supplier_name") or bill.get("contact_id") or "Unknown"),
+                    "Title/Description": str(bill.get("title") or bill.get("api_reference") or ""),
+                }
+            )
+
+    return pd.DataFrame(inflow_rows, columns=table_columns), pd.DataFrame(outflow_rows, columns=table_columns)
+
+
+def render_cashflow_section(start_date: date, end_date: date) -> None:
+    st.caption(
+        "Cashflow is based on actual payment dates from Bexio payments. "
+        "Required scope: `kb_bill_show` (plus existing invoice scope). "
+        "If newly added, use 'Reset Bexio session / Reconnect'."
+    )
+
+    token = _get_oauth_token_from_session()
+    if token is None:
+        st.info("Connect to Bexio to load cashflow from invoice and bill payments.")
+        return
+
+    try:
+        with st.spinner("Fetching payments from Bexio..."):
+            inflows_df, outflows_df = _fetch_cashflow_rows(
+                start_date.isoformat(),
+                end_date.isoformat(),
+                _token_cache_key(token),
+            )
+    except Exception as exc:
+        st.error(f"Failed to fetch cashflow data from Bexio: {exc}")
+        st.info(
+            "Troubleshooting tips:\n"
+            "- Ensure OAuth scopes include `kb_invoice_show` and `kb_bill_show`\n"
+            "- Ensure your user has invoice/bill permissions in Bexio\n"
+            "- Reconnect via 'Reset Bexio session / Reconnect'"
+        )
+        return
+
+    inflows_total = float(inflows_df["Amount"].sum()) if not inflows_df.empty else 0.0
+    outflows_total = float(outflows_df["Amount"].sum()) if not outflows_df.empty else 0.0
+    net_total = inflows_total - outflows_total
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Inflows", f"{inflows_total:,.2f} CHF")
+    c2.metric("Total Outflows", f"-{outflows_total:,.2f} CHF")
+    c3.metric("Net Cashflow", f"{net_total:,.2f} CHF")
+
+    chart_df = pd.DataFrame(
+        [
+            {"Type": "Inflows", "Amount": inflows_total},
+            {"Type": "Outflows", "Amount": -outflows_total},
+            {"Type": "Net", "Amount": net_total},
+        ]
+    )
+    chart = px.bar(
+        chart_df,
+        x="Type",
+        y="Amount",
+        color="Type",
+        text="Amount",
+        title=f"Cashflow {start_date.isoformat()} - {end_date.isoformat()}",
+        color_discrete_map={"Inflows": "#2E8B57", "Outflows": "#C0392B", "Net": "#2980B9"},
+    )
+    chart.update_traces(texttemplate="%{text:,.2f} CHF")
+    chart.update_yaxes(tickformat=",.0f")
+    chart.update_layout(showlegend=False, template="plotly_dark")
+    st.plotly_chart(chart, width="stretch")
+
+    in_tab, out_tab = st.tabs(["Inflows", "Outflows"])
+    with in_tab:
+        st.dataframe(inflows_df.sort_values("Payment Date", ascending=False), width="stretch", hide_index=True)
+    with out_tab:
+        st.dataframe(outflows_df.sort_values("Payment Date", ascending=False), width="stretch", hide_index=True)
+
+
 def render_dashboard_page(settings: Settings) -> None:
     st.header("Bexio Dashboard")
     presets = ["This Month", "QTD", "YTD", "Custom"]
@@ -386,7 +557,7 @@ def render_dashboard_page(settings: Settings) -> None:
         st.caption("Data source: Bexio" if using_real_data else "Data source: Dummy seed data")
 
     with tab2:
-        st.plotly_chart(build_cashflow_trend(transactions_df_for_kpis), width="stretch")
+        render_cashflow_section(start_date, end_date)
 
     with tab3:
         st.markdown("### Invoices")

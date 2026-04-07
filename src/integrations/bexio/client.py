@@ -113,6 +113,34 @@ class BexioClient:
         self.cache.set(cache_key, rows)
         return rows
 
+    def _try_paginated_post(self, endpoints: list[str], base_payload: dict[str, Any] | list | None = None) -> list[dict[str, Any]]:
+        last_exc: Exception | None = None
+        for endpoint in endpoints:
+            try:
+                return self._paginated_post(endpoint, base_payload=base_payload)
+            except BexioApiError as exc:
+                last_exc = exc
+                if exc.status_code == 404:
+                    continue
+                raise
+        if last_exc:
+            raise last_exc
+        return []
+
+    def _try_cached_get(self, endpoints: list[str], *, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        last_exc: Exception | None = None
+        for endpoint in endpoints:
+            try:
+                return self._cached_get(endpoint, params=params, use_accounting_api=False)
+            except BexioApiError as exc:
+                last_exc = exc
+                if exc.status_code == 404:
+                    continue
+                raise
+        if last_exc:
+            raise last_exc
+        return []
+
     def _cached_get(
         self,
         endpoint: str,
@@ -177,6 +205,31 @@ class BexioClient:
             offset += page_size
         return all_rows
 
+    def _paginated_get_by_page(
+        self,
+        endpoint: str,
+        *,
+        params: dict[str, Any] | None = None,
+        page_param: str = "page",
+        limit_param: str = "limit",
+        page_size: int = 500,
+        use_accounting_api: bool = False,
+    ) -> list[dict[str, Any]]:
+        all_rows: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            page_params = dict(params or {})
+            page_params[limit_param] = page_size
+            page_params[page_param] = page
+            page_rows = self._cached_get(endpoint, page_params, use_accounting_api=use_accounting_api)
+            if not page_rows:
+                break
+            all_rows.extend(page_rows)
+            if len(page_rows) < page_size:
+                break
+            page += 1
+        return all_rows
+
     def list_invoices(self, include_open: bool = True, include_paid: bool = True) -> list[dict[str, Any]]:
         rows = self._paginated_post("/kb_invoice/search")
         if include_open and include_paid:
@@ -187,6 +240,19 @@ class BexioClient:
         if include_paid:
             wanted.add("paid")
         return [row for row in rows if str(row.get("status", "")).lower() in wanted]
+
+    def list_bills(self) -> list[dict[str, Any]]:
+        # Supplier bills are not consistently exposed under the same resource path across
+        # API variants/accounts. Try known/observed purchase endpoints and fall back to
+        # purchase expenses (which many accounts have enabled).
+        return self._try_paginated_post(
+            [
+                "/kb_bill/search",
+                "/purchase/bill/search",
+                "/purchase/bills/search",
+                "/kb_expense/search",
+            ]
+        )
 
     def list_orders_or_quotes(self) -> list[dict[str, Any]]:
         return self._paginated_post("/kb_order/search")
@@ -221,6 +287,29 @@ class BexioClient:
     def list_accounts_v2(self) -> list[dict[str, Any]]:
         # v2 endpoint (2.0) returns numeric ids + account_no + name which we can use for P&L mapping.
         return self._paginated_get("/accounts", page_size=2000, use_accounting_api=False)
+
+    def list_invoices_v2(self, *, page_size: int = 500, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        # Backwards compatible name: prefer search endpoint used elsewhere in the app.
+        del page_size, params
+        return self.list_invoices(include_open=True, include_paid=True)
+
+    def list_bills_v2(self, *, page_size: int = 500, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        # Backwards compatible name: supplier bills are accessed via search endpoint.
+        del page_size, params
+        return self.list_bills()
+
+    def list_invoice_payments(self, invoice_id: int | str) -> list[dict[str, Any]]:
+        return self._cached_get(f"/kb_invoice/{invoice_id}/payment", use_accounting_api=False)
+
+    def list_bill_payments(self, bill_id: int | str) -> list[dict[str, Any]]:
+        return self._try_cached_get(
+            [
+                f"/kb_bill/{bill_id}/payment",
+                f"/purchase/bill/{bill_id}/payment",
+                f"/purchase/bills/{bill_id}/payment",
+                f"/kb_expense/{bill_id}/payment",
+            ]
+        )
 
     def search(self, endpoint: str, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         if not endpoint.startswith("/"):
