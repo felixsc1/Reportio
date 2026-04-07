@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import date, datetime
 import json
 from pathlib import Path
-from uuid import uuid4
 
 import pandas as pd
 import plotly.express as px
@@ -15,7 +14,6 @@ from src.dashboard.kpis import compute_kpis
 from src.dashboard.profit_and_loss import compute_profit_and_loss
 from src.dashboard.tables import filter_invoices
 from src.integrations.bexio.client import BexioClient
-from src.integrations.bexio.models import OAuthToken
 
 
 def _get_date_range(preset: str) -> tuple[date, date]:
@@ -55,98 +53,31 @@ def _dummy_invoices() -> pd.DataFrame:
     return df
 
 
-def _get_oauth_token_from_session() -> OAuthToken | None:
-    raw = st.session_state.get("oauth_token")
-    if isinstance(raw, OAuthToken):
-        return raw
-    if isinstance(raw, dict):
-        try:
-            return OAuthToken(
-                access_token=str(raw.get("access_token", "")),
-                refresh_token=str(raw.get("refresh_token", "")),
-                expires_at=pd.to_datetime(raw.get("expires_at")).to_pydatetime(),
-                token_type=str(raw.get("token_type", "Bearer")),
-            )
-        except Exception:
-            return None
-    # Be resilient to module reloads where class identity can change.
-    if all(hasattr(raw, name) for name in ("access_token", "refresh_token", "expires_at")):
-        try:
-            return OAuthToken(
-                access_token=str(raw.access_token),
-                refresh_token=str(raw.refresh_token),
-                expires_at=pd.to_datetime(raw.expires_at).to_pydatetime(),
-                token_type=str(getattr(raw, "token_type", "Bearer")),
-            )
-        except Exception:
-            return None
-    return None
+def _has_bexio_pat(settings: Settings) -> bool:
+    return bool(settings.bexio_pat.strip())
 
 
-def _render_oauth_panel(settings: Settings) -> None:
+def _render_bexio_auth_panel(settings: Settings) -> None:
     st.subheader("Bexio Connection")
-    state = st.session_state.get("oauth_state") or str(uuid4())
-    st.session_state["oauth_state"] = state
-
-    if st.button("Reset Bexio session / Reconnect", key="bexio_reset_session"):
-        st.session_state.pop("oauth_token", None)
-        st.session_state.pop("oauth_state", None)
-        st.query_params.clear()
-        st.info("Bexio session reset. Click connect again to authorize with updated scopes.")
-
-    client = BexioClient(settings)
-    auth_url = client.oauth.build_authorization_url(state=state)
-    st.markdown(f"[Connect with Bexio]({auth_url})")
-
-    existing_token = _get_oauth_token_from_session()
-    if existing_token is not None:
-        st.success("Bexio connected.")
-        return
-
-    code = st.query_params.get("code")
-    callback_state = st.query_params.get("state")
-    oauth_error = st.query_params.get("error")
-    oauth_error_description = st.query_params.get("error_description")
-    if oauth_error:
-        st.error(
-            "Bexio authorization failed: "
-            f"{oauth_error}"
-            + (f" - {oauth_error_description}" if oauth_error_description else "")
-        )
-        return
-    if code:
-        # In local Streamlit flows the callback can open a slightly different session;
-        # accept code and only warn on state mismatch instead of dropping the login.
-        if callback_state and callback_state != state:
-            st.warning("OAuth state changed between redirects; continuing with callback code.")
-        try:
-            token = client.oauth.exchange_code_for_token(str(code))
-            st.session_state["oauth_token"] = {
-                "access_token": token.access_token,
-                "refresh_token": token.refresh_token,
-                "expires_at": token.expires_at.isoformat(),
-                "token_type": token.token_type,
-            }
-            st.query_params.clear()
-            st.rerun()
-        except Exception as exc:
-            st.error(f"Bexio token exchange failed: {exc}")
+    if _has_bexio_pat(settings):
+        st.success("Bexio PAT configured.")
+    else:
+        st.error("Missing `BEXIO_PAT`. Add it to `.env` and restart the app.")
+    st.caption("Authentication mode: Personal Access Token (PAT).")
 
 
 def _load_real_invoices(settings: Settings) -> pd.DataFrame | None:
-    token = _get_oauth_token_from_session()
-    if not isinstance(token, OAuthToken):
+    if not _has_bexio_pat(settings):
         return None
-    client = BexioClient(settings, token=token)
+    client = BexioClient(settings)
     try:
         invoices = client.list_invoices()
     except Exception as exc:
         st.warning(f"Connected but failed to load invoices from Bexio: {exc}")
         st.info(
             "💡 **Troubleshooting tips:**\n"
-            "• Click **'Reset Bexio session / Reconnect'** (this also clears cache)\n"
-            "• Check that your OAuth app has the `kb_invoice_show` scope\n"
-            "• Verify the user account has access to invoices in Bexio\n"
+            "• Ensure `BEXIO_PAT` is valid and not expired/revoked\n"
+            "• Verify your user account has access to invoices in Bexio\n"
             "• Check the console for detailed API error logs (now improved)"
         )
         # Clear cache on error so next attempt doesn't reuse a failed response
@@ -155,12 +86,6 @@ def _load_real_invoices(settings: Settings) -> pd.DataFrame | None:
         except Exception:
             pass
         return None
-    st.session_state["oauth_token"] = {
-        "access_token": client.token.access_token if client.token else "",
-        "refresh_token": client.token.refresh_token if client.token else "",
-        "expires_at": client.token.expires_at.isoformat() if client.token else "",
-        "token_type": client.token.token_type if client.token else "Bearer",
-    }
     if not invoices:
         return pd.DataFrame(columns=["document_nr", "contact_name", "status", "amount", "date"])
 
@@ -289,11 +214,10 @@ def _load_profit_and_loss(
     start_date: date,
     end_date: date,
 ) -> tuple[float, float, float, pd.DataFrame] | None:
-    token = _get_oauth_token_from_session()
-    if not isinstance(token, OAuthToken):
+    if not _has_bexio_pat(settings):
         return None
 
-    client = BexioClient(settings, token=token)
+    client = BexioClient(settings)
     try:
         # Accounts can be cached more aggressively than journal rows (we use TTLCache inside the client).
         accounts = client.list_accounts_v2()
@@ -305,9 +229,9 @@ def _load_profit_and_loss(
         st.warning(f"Connected but failed to load Profit & Loss from Bexio: {exc}")
         st.info(
             "Troubleshooting tips:\n"
-            "- Ensure your OAuth app requested the `accounting` scope\n"
+            "- Ensure your PAT is valid and has access to accounting data\n"
             "- Ensure the user has accounting permissions in Bexio\n"
-            "- Try 'Reset Bexio session / Reconnect' to re-authorize with new scopes"
+            "- Regenerate PAT if it might be expired/revoked"
         )
         try:
             client.clear_cache()
@@ -380,23 +304,24 @@ def _is_bill_paid(bill: dict[str, object]) -> bool:
     return str(bill.get("status", "")).strip().lower() in {"paid", "bezahlt", "done"}
 
 
-def _token_cache_key(token: OAuthToken) -> str:
-    return f"{token.access_token[-12:]}:{token.expires_at.isoformat()}"
+def _pat_cache_key(settings: Settings) -> str:
+    pat = settings.bexio_pat or ""
+    return pat[-12:] if pat else "missing"
 
 
 @st.cache_data(show_spinner=False)
 def _fetch_cashflow_rows(
     start_date_iso: str,
     end_date_iso: str,
-    token_key: str,
+    pat_key: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    del token_key  # only used for Streamlit cache invalidation
-    token = _get_oauth_token_from_session()
+    del pat_key  # only used for Streamlit cache invalidation
+    settings = get_settings()
     table_columns = ["Payment Date", "Amount", "Document Nr.", "Contact Name", "Title/Description"]
-    if token is None:
+    if not _has_bexio_pat(settings):
         return pd.DataFrame(columns=table_columns), pd.DataFrame(columns=table_columns)
 
-    client = BexioClient(get_settings(), token=token)
+    client = BexioClient(settings)
     start = date.fromisoformat(start_date_iso)
     end = date.fromisoformat(end_date_iso)
 
@@ -450,14 +375,12 @@ def _fetch_cashflow_rows(
 
 def render_cashflow_section(start_date: date, end_date: date) -> None:
     st.caption(
-        "Cashflow is based on actual payment dates from Bexio payments. "
-        "Required scope: `kb_bill_show` (plus existing invoice scope). "
-        "If newly added, use 'Reset Bexio session / Reconnect'."
+        "Cashflow is based on actual payment dates from Bexio payments via PAT authentication."
     )
 
-    token = _get_oauth_token_from_session()
-    if token is None:
-        st.info("Connect to Bexio to load cashflow from invoice and bill payments.")
+    settings = get_settings()
+    if not _has_bexio_pat(settings):
+        st.info("Configure `BEXIO_PAT` in `.env` to load cashflow from invoice and bill payments.")
         return
 
     try:
@@ -465,15 +388,15 @@ def render_cashflow_section(start_date: date, end_date: date) -> None:
             inflows_df, outflows_df = _fetch_cashflow_rows(
                 start_date.isoformat(),
                 end_date.isoformat(),
-                _token_cache_key(token),
+                _pat_cache_key(settings),
             )
     except Exception as exc:
         st.error(f"Failed to fetch cashflow data from Bexio: {exc}")
         st.info(
             "Troubleshooting tips:\n"
-            "- Ensure OAuth scopes include `kb_invoice_show` and `kb_bill_show`\n"
+            "- Ensure `BEXIO_PAT` is valid and not expired/revoked\n"
             "- Ensure your user has invoice/bill permissions in Bexio\n"
-            "- Reconnect via 'Reset Bexio session / Reconnect'"
+            "- Verify PAT access with `GET /4.0/purchase/bills`"
         )
         return
 
@@ -526,7 +449,7 @@ def render_dashboard_page(settings: Settings) -> None:
     else:
         start_date, end_date = _get_date_range(selected_preset)
 
-    _render_oauth_panel(settings)
+    _render_bexio_auth_panel(settings)
 
     invoices_df = _load_real_invoices(settings)
     using_real_data = invoices_df is not None

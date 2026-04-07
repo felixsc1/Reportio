@@ -13,13 +13,10 @@ class Settings:
     app_env: str
     log_level: str
     cache_ttl_seconds: int
-    bexio_client_id: str
-    bexio_client_secret: str
-    bexio_redirect_uri: str
-    bexio_auth_base_url: str
-    bexio_oauth_scope: str
+    bexio_pat: str
     bexio_api_base_url: str
     bexio_accounting_api_base_url: str
+    bexio_purchase_api_base_url: str
     personio_client_id: str
     personio_client_secret: str
     personio_api_base_url: str
@@ -56,19 +53,14 @@ def get_settings() -> Settings:
         app_env=_read_value("APP_ENV", "development"),
         log_level=_read_value("LOG_LEVEL", "INFO"),
         cache_ttl_seconds=int(_read_value("REPORTIO_CACHE_TTL_SECONDS", "300")),
-        bexio_client_id=_read_value("BEXIO_CLIENT_ID"),
-        bexio_client_secret=_read_value("BEXIO_CLIENT_SECRET"),
-        bexio_redirect_uri=_read_value("BEXIO_REDIRECT_URI", "http://localhost:8501"),
-        bexio_auth_base_url=_read_value("BEXIO_AUTH_BASE_URL", "https://auth.bexio.com/realms/bexio"),
-        bexio_oauth_scope=_read_value(
-            "BEXIO_OAUTH_SCOPE",
-            "kb_invoice_show kb_bill_show kb_order_show offline_access",
-        ),
+        bexio_pat=_read_value("BEXIO_PAT"),
         bexio_api_base_url=_read_value("BEXIO_API_BASE_URL", "https://api.bexio.com/2.0"),
         bexio_accounting_api_base_url=_read_value(
             "BEXIO_ACCOUNTING_API_BASE_URL",
             "https://api.bexio.com/3.0",
         ),
+        # Purchase endpoints (Bills/Expenses/Outgoing Payments) live on the v4 API.
+        bexio_purchase_api_base_url=_read_value("BEXIO_PURCHASE_API_BASE_URL", "https://api.bexio.com/4.0"),
         personio_client_id=_read_value("PERSONIO_CLIENT_ID"),
         personio_client_secret=_read_value("PERSONIO_CLIENT_SECRET"),
         personio_api_base_url=_read_value("PERSONIO_API_BASE_URL", "https://api.personio.de/v1"),

@@ -6,7 +6,7 @@ Reportio is a local-first Streamlit financial dashboard with Bexio integration a
 
 ## Features in this MVP
 
-- Bexio OAuth2 authorization code flow wiring (with refresh token support).
+- Bexio integration using Personal Access Token (PAT) authentication.
 - `BexioClient` wrappers for invoices, orders/quotes, journal entries, accounts, and generic search.
 - Dashboard page with date filters, KPI cards, Plotly charts, invoice filters/search, and payments summary.
 - Personio page with employee/date filters, attendance and absence tables, project hour breakdown, and mismatch cue.
@@ -33,16 +33,13 @@ Reportio is a local-first Streamlit financial dashboard with Bexio integration a
 5. Run app:
    - `python -m streamlit run app.py`
 
-## OAuth callback flow
+## Bexio authentication (PAT)
 
-- App exposes a Bexio connect link on the dashboard.
-- Use `BEXIO_AUTH_BASE_URL=https://auth.bexio.com/realms/bexio` (new IdP).
-- `BEXIO_OAUTH_SCOPE` is optional (defaults to `kb_invoice_show kb_order_show offline_access`).
-- Include only scopes enabled for your OAuth app in the Bexio developer portal. Required for invoices: `kb_invoice_show`. For orders: `kb_order_show`. `offline_access` enables refresh tokens.
-- Profit & Loss is built from the accounting journal endpoint (`GET /3.0/accounting/journal`) and requires the `accounting` scope.
-- After login/consent, Bexio redirects back to your configured `BEXIO_REDIRECT_URI`.
-- The app exchanges `code` for tokens and stores token state in Streamlit session state for the current browser session.
-- Access tokens auto-refresh when near expiry.
+- Configure `BEXIO_PAT` in `.env` (create it at [developer.bexio.com/pat](https://developer.bexio.com/pat)).
+- The dashboard reads data directly using this bearer token.
+- Profit & Loss uses `GET /3.0/accounting/journal`.
+- Supplier bills/outgoing payments use Purchase API v4 (`/4.0/purchase/...`).
+- Keep PAT secret, rotate periodically, and revoke it immediately if leaked.
 
 ## Personio integration (client credentials)
 

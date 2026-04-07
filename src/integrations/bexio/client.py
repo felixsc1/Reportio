@@ -8,17 +8,15 @@ import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from src.config.settings import Settings
-from src.integrations.bexio.models import BexioApiError, OAuthToken
-from src.integrations.bexio.oauth import BexioOAuthManager
+from src.integrations.bexio.models import BexioApiError
 from src.utils.cache import TTLCache
 
 logger = logging.getLogger(__name__)
 
 
 class BexioClient:
-    def __init__(self, settings: Settings, token: OAuthToken | None = None) -> None:
+    def __init__(self, settings: Settings, token: str | None = None) -> None:
         self.settings = settings
-        self.oauth = BexioOAuthManager(settings)
         self.token = token
         self.cache = TTLCache(settings.cache_ttl_seconds)
         self._client = httpx.Client(base_url=settings.bexio_api_base_url.rstrip("/"), timeout=30.0)
@@ -26,21 +24,25 @@ class BexioClient:
             base_url=settings.bexio_accounting_api_base_url.rstrip("/"),
             timeout=30.0,
         )
+        self._purchase_client = httpx.Client(
+            base_url=settings.bexio_purchase_api_base_url.rstrip("/"),
+            timeout=30.0,
+        )
 
-    def set_token(self, token: OAuthToken) -> None:
+    def set_token(self, token: str) -> None:
         self.token = token
 
-    def _ensure_token(self) -> OAuthToken:
-        if self.token is None:
-            raise BexioApiError(status_code=401, message="Missing OAuth token")
-        if self.token.needs_refresh and self.token.refresh_token:
-            self.token = self.oauth.refresh_access_token(self.token.refresh_token)
-        return self.token
+    def _ensure_token(self) -> str:
+        if self.token:
+            return self.token
+        if self.settings.bexio_pat:
+            return self.settings.bexio_pat
+        raise BexioApiError(status_code=401, message="Missing BEXIO_PAT")
 
     def _headers(self) -> dict[str, str]:
         token = self._ensure_token()
         return {
-            "Authorization": f"Bearer {token.access_token}",
+            "Authorization": f"Bearer {token}",
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
@@ -59,9 +61,13 @@ class BexioClient:
         params: dict[str, Any] | None = None,
         *,
         use_accounting_api: bool = False,
+        use_purchase_api: bool = False,
     ) -> list[dict[str, Any]]:
         headers = self._headers()
-        client = self._accounting_client if use_accounting_api else self._client
+        if use_purchase_api:
+            client = self._purchase_client
+        else:
+            client = self._accounting_client if use_accounting_api else self._client
         logger.info(
             "Bexio API request: %s %s | Content-Type=%s | params=%s | body_type=%s | body=%s",
             method, 
@@ -87,7 +93,16 @@ class BexioClient:
 
         if response.status_code >= 400:
             error_body = response.text[:800]
-            logger.error("Bexio API error %s %s: %s", response.status_code, endpoint, error_body)
+            auth_header = response.headers.get("WWW-Authenticate")
+            request_id = response.headers.get("X-Request-Id") or response.headers.get("x-request-id")
+            logger.error(
+                "Bexio API error %s %s: %s | www_authenticate=%s | request_id=%s",
+                response.status_code,
+                endpoint,
+                error_body,
+                auth_header,
+                request_id,
+            )
             raise BexioApiError(status_code=response.status_code, message=error_body)
 
         try:
@@ -141,20 +156,127 @@ class BexioClient:
             raise last_exc
         return []
 
+    def _try_paginated_get_by_page(
+        self,
+        endpoints: list[str],
+        *,
+        params: dict[str, Any] | None = None,
+        page_size: int = 500,
+    ) -> list[dict[str, Any]]:
+        last_exc: Exception | None = None
+        for endpoint in endpoints:
+            try:
+                return self._paginated_get_by_page(
+                    endpoint,
+                    params=params,
+                    page_size=page_size,
+                    use_accounting_api=False,
+                )
+            except BexioApiError as exc:
+                last_exc = exc
+                if exc.status_code == 404:
+                    continue
+                raise
+        if last_exc:
+            raise last_exc
+        return []
+
+    def _try_paginated_get_by_page_any_api(
+        self,
+        endpoints: list[str],
+        *,
+        params: dict[str, Any] | None = None,
+        page_size: int = 500,
+    ) -> list[dict[str, Any]]:
+        """
+        Some Bexio resources are available on different API base URLs (2.0 vs 3.0)
+        depending on module/tenant. Try v2 first, then v3.
+        """
+        last_exc: Exception | None = None
+        for use_accounting_api in (False, True):
+            for endpoint in endpoints:
+                try:
+                    return self._paginated_get_by_page(
+                        endpoint,
+                        params=params,
+                        page_size=page_size,
+                        use_accounting_api=use_accounting_api,
+                    )
+                except BexioApiError as exc:
+                    last_exc = exc
+                    if exc.status_code == 404:
+                        continue
+                    raise
+        if last_exc:
+            raise last_exc
+        return []
+
+    def _paginated_get_by_page_purchase_api(
+        self,
+        endpoint: str,
+        *,
+        params: dict[str, Any] | None = None,
+        page_size: int = 500,
+    ) -> list[dict[str, Any]]:
+        try:
+            return self._paginated_get_by_page(
+                endpoint,
+                params=params,
+                page_size=page_size,
+                use_purchase_api=True,
+            )
+        except BexioApiError as exc:
+            if exc.status_code == 404:
+                raise BexioApiError(
+                    status_code=404,
+                    message=(
+                        "Purchase API endpoint not available (404). "
+                        "Bexio Purchase APIs (Bills/Expenses/Outgoing Payments) are only available for tenants using "
+                        "the new Purchase module. See `https://www.bexio.com/en-CH/purchase`."
+                    ),
+                ) from exc
+            raise
+
+    def _try_cached_get_any_api(self, endpoints: list[str], *, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        last_exc: Exception | None = None
+        for use_accounting_api in (False, True):
+            for endpoint in endpoints:
+                try:
+                    return self._cached_get(endpoint, params=params, use_accounting_api=use_accounting_api)
+                except BexioApiError as exc:
+                    last_exc = exc
+                    if exc.status_code == 404:
+                        continue
+                    raise
+        if last_exc:
+            raise last_exc
+        return []
+
     def _cached_get(
         self,
         endpoint: str,
         params: dict[str, Any] | None = None,
         *,
         use_accounting_api: bool = False,
+        use_purchase_api: bool = False,
     ) -> list[dict[str, Any]]:
-        cache_key = f"GET:{'v3' if use_accounting_api else 'v2'}:{endpoint}:{json.dumps(params or {}, sort_keys=True)}"
+        cache_key = (
+            f"GET:{'v4' if use_purchase_api else ('v3' if use_accounting_api else 'v2')}:"
+            f"{endpoint}:{json.dumps(params or {}, sort_keys=True)}"
+        )
         cached = self.cache.get(cache_key)
         if cached is not None:
             logger.debug("Cache hit for %s", cache_key)
             return cached
 
-        rows = self._request("GET", endpoint, json_body=None, params=params, use_accounting_api=use_accounting_api)
+        rows = self._request(
+            "GET",
+            endpoint,
+            json_body=None,
+            params=params,
+            use_accounting_api=use_accounting_api,
+            use_purchase_api=use_purchase_api,
+        )
         self.cache.set(cache_key, rows)
         return rows
 
@@ -214,6 +336,7 @@ class BexioClient:
         limit_param: str = "limit",
         page_size: int = 500,
         use_accounting_api: bool = False,
+        use_purchase_api: bool = False,
     ) -> list[dict[str, Any]]:
         all_rows: list[dict[str, Any]] = []
         page = 1
@@ -221,7 +344,12 @@ class BexioClient:
             page_params = dict(params or {})
             page_params[limit_param] = page_size
             page_params[page_param] = page
-            page_rows = self._cached_get(endpoint, page_params, use_accounting_api=use_accounting_api)
+            page_rows = self._cached_get(
+                endpoint,
+                page_params,
+                use_accounting_api=use_accounting_api,
+                use_purchase_api=use_purchase_api,
+            )
             if not page_rows:
                 break
             all_rows.extend(page_rows)
@@ -242,17 +370,8 @@ class BexioClient:
         return [row for row in rows if str(row.get("status", "")).lower() in wanted]
 
     def list_bills(self) -> list[dict[str, Any]]:
-        # Supplier bills are not consistently exposed under the same resource path across
-        # API variants/accounts. Try known/observed purchase endpoints and fall back to
-        # purchase expenses (which many accounts have enabled).
-        return self._try_paginated_post(
-            [
-                "/kb_bill/search",
-                "/purchase/bill/search",
-                "/purchase/bills/search",
-                "/kb_expense/search",
-            ]
-        )
+        # Bexio docs: Purchase Bills live under API v4: GET /4.0/purchase/bills
+        return self._paginated_get_by_page_purchase_api("/purchase/bills", page_size=500)
 
     def list_orders_or_quotes(self) -> list[dict[str, Any]]:
         return self._paginated_post("/kb_order/search")
@@ -302,13 +421,14 @@ class BexioClient:
         return self._cached_get(f"/kb_invoice/{invoice_id}/payment", use_accounting_api=False)
 
     def list_bill_payments(self, bill_id: int | str) -> list[dict[str, Any]]:
-        return self._try_cached_get(
-            [
-                f"/kb_bill/{bill_id}/payment",
-                f"/purchase/bill/{bill_id}/payment",
-                f"/purchase/bills/{bill_id}/payment",
-                f"/kb_expense/{bill_id}/payment",
-            ]
+        # Bexio docs: Outgoing payments are retrieved via:
+        # GET /4.0/purchase/outgoing-payments?bill_id=<uuid>
+        #
+        # Note: bill_id is required.
+        return self._cached_get(
+            "/purchase/outgoing-payments",
+            params={"bill_id": str(bill_id), "limit": 500, "page": 1},
+            use_purchase_api=True,
         )
 
     def search(self, endpoint: str, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -326,3 +446,4 @@ class BexioClient:
     def close(self) -> None:
         self._client.close()
         self._accounting_client.close()
+        self._purchase_client.close()

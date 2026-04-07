@@ -81,6 +81,8 @@ class BexioOAuthManager:
             "client_id": self.settings.bexio_client_id,
             "redirect_uri": self.settings.bexio_redirect_uri,
             "state": state,
+            # Force the consent step so newly added scopes are explicitly granted.
+            "prompt": "consent",
         }
         if resolved_scope.strip():
             params["scope"] = resolved_scope

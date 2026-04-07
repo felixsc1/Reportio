@@ -11,6 +11,7 @@ class OAuthToken:
     refresh_token: str
     expires_at: datetime
     token_type: str = "Bearer"
+    scope: str = ""
 
     @property
     def needs_refresh(self) -> bool:
@@ -24,6 +25,7 @@ class OAuthToken:
             refresh_token=payload.get("refresh_token", ""),
             expires_at=datetime.utcnow() + timedelta(seconds=expires_in),
             token_type=payload.get("token_type", "Bearer"),
+            scope=str(payload.get("scope", "")),
         )
 
 
